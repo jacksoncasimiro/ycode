@@ -300,7 +300,10 @@ export default async function Page({ params }: PageProps) {
     notFound();
   }
 
-  const { page, pageLayers, components, collectionItem, collectionFields, pageCollectionSortedItemIds, pageCollectionSortedItemSlugs, locale, availableLocales, translations } = data;
+  const { page, pageLayers, components, collectionItem, collectionFields, pageCollectionSortedItemIds, pageCollectionSortedItemSlugs, locale, availableLocales, translations, generatedCss } = data;
+
+  // Per-page CSS with fallback to global published_css
+  const cssForPage = generatedCss || globalSettings.publishedCss || undefined;
 
   // Check password protection for this page.
   // First evaluate without cookies() so non-protected pages stay cacheable.
@@ -363,7 +366,7 @@ export default async function Page({ params }: PageProps) {
       page={page}
       layers={pageLayers.layers || []}
       components={components}
-      generatedCss={globalSettings.publishedCss || undefined}
+      generatedCss={cssForPage}
       colorVariablesCss={globalSettings.colorVariablesCss || undefined}
       collectionItem={collectionItem}
       collectionFields={collectionFields}

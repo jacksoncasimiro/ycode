@@ -11,6 +11,8 @@ import { getKnexClient } from '../knex-client';
 import { getPublishedPagesByIds } from '@/lib/repositories/pageRepository';
 import { batchPublishPageLayers } from '@/lib/repositories/pageLayersRepository';
 import { getSupabaseAdmin } from '@/lib/supabase-server';
+import { buildSlugPath } from '@/lib/page-utils';
+import type { Page, PageFolder } from '@/types';
 
 /**
  * Helper: Generate a unique slug from a page name
@@ -157,6 +159,10 @@ export async function fixOrphanedPageSlugs(
 /** Result of page publishing with timing */
 export interface PublishPagesResult {
   count: number;
+  /** Page IDs that were actually upserted (content changed, new, or folder moved) */
+  changedPageIds: string[];
+  /** Route paths that no longer exist because a page's slug or folder changed */
+  renamedPageOldRoutes: string[];
   timing: {
     pagesDurationMs: number;
     layersDurationMs: number;
@@ -173,7 +179,7 @@ export interface PublishPagesResult {
  */
 export async function publishPages(pageIds: string[]): Promise<PublishPagesResult> {
   if (pageIds.length === 0) {
-    return { count: 0, timing: { pagesDurationMs: 0, layersDurationMs: 0, layersCount: 0 } };
+    return { count: 0, changedPageIds: [], renamedPageOldRoutes: [], timing: { pagesDurationMs: 0, layersDurationMs: 0, layersCount: 0 } };
   }
 
   // Import folder functions
@@ -205,7 +211,7 @@ export async function publishPages(pageIds: string[]): Promise<PublishPagesResul
   );
 
   if (validDraftPages.length === 0) {
-    return { count: 0, timing: { pagesDurationMs: 0, layersDurationMs: 0, layersCount: 0 } };
+    return { count: 0, changedPageIds: [], renamedPageOldRoutes: [], timing: { pagesDurationMs: 0, layersDurationMs: 0, layersCount: 0 } };
   }
 
   // Step 2: Collect all unique folder IDs from pages
@@ -361,6 +367,34 @@ export async function publishPages(pageIds: string[]): Promise<PublishPagesResul
     }
   }
 
+  // Capture old route paths for pages whose slug or folder changed so the
+  // old URLs can be invalidated (prevents stale caches at the previous URL)
+  const renamedPageOldRoutes: string[] = [];
+  const publishedFoldersArray = publishedFolders as PageFolder[];
+
+  for (const upsertPage of pagesToUpsert) {
+    const oldPublished = publishedPagesById.get(upsertPage.id);
+    if (!oldPublished) continue; // new page, no old route
+
+    const slugChanged = oldPublished.slug !== upsertPage.slug;
+    const folderChanged = oldPublished.page_folder_id !== upsertPage.page_folder_id;
+
+    if (slugChanged || folderChanged) {
+      const oldPath = buildSlugPath(
+        oldPublished as Page,
+        publishedFoldersArray,
+        'page',
+      );
+      const trimmed = oldPath.slice(1); // remove leading "/"
+
+      if (oldPublished.is_index && oldPublished.page_folder_id === null) {
+        renamedPageOldRoutes.push('');
+      } else if (trimmed) {
+        renamedPageOldRoutes.push(trimmed);
+      }
+    }
+  }
+
   // Step 8a: Remove published pages that would violate slug+folder+error_page unique
   // constraint (same slug/folder/error_page but different id – e.g. replaced/renamed page).
   // Dynamic pages are excluded because the DB unique index skips them (is_dynamic = false)
@@ -469,15 +503,23 @@ export async function publishPages(pageIds: string[]): Promise<PublishPagesResul
 
   // Time layers publishing
   const layersStart = performance.now();
-  const layersCount = await batchPublishPageLayers(pageIdsForLayerPublish);
+  const layersResult = await batchPublishPageLayers(pageIdsForLayerPublish);
   const layersDurationMs = Math.round(performance.now() - layersStart);
+
+  // Merge changed IDs from both pages table and page_layers table
+  const allChangedIds = [...new Set([
+    ...pagesToUpsert.map((p) => p.id),
+    ...layersResult.changedPageIds,
+  ])];
 
   return {
     count: pagesToUpsert.length,
+    changedPageIds: allChangedIds,
+    renamedPageOldRoutes,
     timing: {
       pagesDurationMs,
       layersDurationMs,
-      layersCount,
+      layersCount: layersResult.count,
     },
   };
 }

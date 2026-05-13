@@ -293,11 +293,12 @@ export async function publishComponent(draftComponentId: string): Promise<Compon
 
 /**
  * Publish multiple components in batch
- * Uses batch upsert for efficiency
+ * Only upserts components whose content_hash actually changed.
+ * Returns the IDs of components that were modified.
  */
-export async function publishComponents(componentIds: string[]): Promise<{ count: number }> {
+export async function publishComponents(componentIds: string[]): Promise<{ count: number; changedComponentIds: string[] }> {
   if (componentIds.length === 0) {
-    return { count: 0 };
+    return { count: 0, changedComponentIds: [] };
   }
 
   const client = await getSupabaseAdmin();
@@ -318,32 +319,55 @@ export async function publishComponents(componentIds: string[]): Promise<{ count
   }
 
   if (!draftComponents || draftComponents.length === 0) {
-    return { count: 0 };
+    return { count: 0, changedComponentIds: [] };
   }
 
-  // Prepare components for batch upsert
-  const componentsToUpsert = draftComponents.map(draft => ({
-    id: draft.id,
-    name: draft.name,
-    layers: draft.layers,
-    variables: draft.variables,
-    content_hash: draft.content_hash,
-    is_published: true,
-    updated_at: new Date().toISOString(),
-  }));
-
-  // Batch upsert all components
-  const { error: upsertError } = await client
+  // Fetch existing published versions to compare hashes
+  const { data: publishedComponents } = await client
     .from('components')
-    .upsert(componentsToUpsert, {
-      onConflict: 'id,is_published',
-    });
+    .select('id, content_hash')
+    .in('id', draftComponents.map(d => d.id))
+    .eq('is_published', true);
 
-  if (upsertError) {
-    throw new Error(`Failed to publish components: ${upsertError.message}`);
+  const publishedHashById = new Map<string, string>();
+  if (publishedComponents) {
+    for (const pub of publishedComponents) {
+      if (pub.content_hash) publishedHashById.set(pub.id, pub.content_hash);
+    }
   }
 
-  return { count: componentsToUpsert.length };
+  // Only upsert components that are new or have changed
+  const componentsToUpsert = draftComponents
+    .filter(draft => {
+      const pubHash = publishedHashById.get(draft.id);
+      return !pubHash || pubHash !== draft.content_hash;
+    })
+    .map(draft => ({
+      id: draft.id,
+      name: draft.name,
+      layers: draft.layers,
+      variables: draft.variables,
+      content_hash: draft.content_hash,
+      is_published: true,
+      updated_at: new Date().toISOString(),
+    }));
+
+  if (componentsToUpsert.length > 0) {
+    const { error: upsertError } = await client
+      .from('components')
+      .upsert(componentsToUpsert, {
+        onConflict: 'id,is_published',
+      });
+
+    if (upsertError) {
+      throw new Error(`Failed to publish components: ${upsertError.message}`);
+    }
+  }
+
+  return {
+    count: componentsToUpsert.length,
+    changedComponentIds: componentsToUpsert.map(c => c.id),
+  };
 }
 
 /**
@@ -607,13 +631,29 @@ export async function softDeleteComponent(id: string): Promise<SoftDeleteResult>
   // Find all affected entities
   const affectedEntities = await findEntitiesUsingComponent(id);
 
-  // Detach component from all affected page_layers
+  // Detach component from all affected page_layers and recompute hashes
+  const { generatePageLayersHash } = await import('@/lib/hash-utils');
+
   for (const entity of affectedEntities) {
     if (entity.type === 'page') {
+      // Fetch existing generated_css to keep hash consistent
+      const { data: existing } = await client
+        .from('page_layers')
+        .select('generated_css')
+        .eq('id', entity.id)
+        .eq('is_published', false)
+        .single();
+
+      const contentHash = generatePageLayersHash({
+        layers: entity.newLayers,
+        generated_css: existing?.generated_css || null,
+      });
+
       const { error: updateError } = await client
         .from('page_layers')
         .update({
           layers: entity.newLayers,
+          content_hash: contentHash,
           updated_at: new Date().toISOString(),
         })
         .eq('id', entity.id);

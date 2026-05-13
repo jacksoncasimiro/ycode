@@ -272,11 +272,12 @@ export async function publishLayerStyle(draftStyleId: string): Promise<LayerStyl
 
 /**
  * Publish multiple layer styles in batch
- * Uses batch upsert for efficiency
+ * Only upserts styles whose content_hash actually changed.
+ * Returns the IDs of styles that were modified.
  */
-export async function publishLayerStyles(styleIds: string[]): Promise<{ count: number }> {
+export async function publishLayerStyles(styleIds: string[]): Promise<{ count: number; changedStyleIds: string[] }> {
   if (styleIds.length === 0) {
-    return { count: 0 };
+    return { count: 0, changedStyleIds: [] };
   }
 
   const client = await getSupabaseAdmin();
@@ -284,45 +285,69 @@ export async function publishLayerStyles(styleIds: string[]): Promise<{ count: n
     throw new Error('Failed to initialize Supabase client');
   }
 
-  // Batch fetch all draft styles
+  // Batch fetch all draft styles (exclude soft-deleted)
   const { data: draftStyles, error: fetchError } = await client
     .from('layer_styles')
     .select('*')
     .in('id', styleIds)
-    .eq('is_published', false);
+    .eq('is_published', false)
+    .is('deleted_at', null);
 
   if (fetchError) {
     throw new Error(`Failed to fetch draft layer styles: ${fetchError.message}`);
   }
 
   if (!draftStyles || draftStyles.length === 0) {
-    return { count: 0 };
+    return { count: 0, changedStyleIds: [] };
   }
 
-  // Prepare styles for batch upsert
-  const stylesToUpsert = draftStyles.map(draft => ({
-    id: draft.id,
-    name: draft.name,
-    classes: draft.classes,
-    design: draft.design,
-    group: draft.group,
-    content_hash: draft.content_hash,
-    is_published: true,
-    updated_at: new Date().toISOString(),
-  }));
-
-  // Batch upsert all styles
-  const { error: upsertError } = await client
+  // Fetch existing published versions to compare hashes
+  const { data: publishedStyles } = await client
     .from('layer_styles')
-    .upsert(stylesToUpsert, {
-      onConflict: 'id,is_published',
-    });
+    .select('id, content_hash')
+    .in('id', draftStyles.map(d => d.id))
+    .eq('is_published', true);
 
-  if (upsertError) {
-    throw new Error(`Failed to publish layer styles: ${upsertError.message}`);
+  const publishedHashById = new Map<string, string>();
+  if (publishedStyles) {
+    for (const pub of publishedStyles) {
+      if (pub.content_hash) publishedHashById.set(pub.id, pub.content_hash);
+    }
   }
 
-  return { count: stylesToUpsert.length };
+  // Only upsert styles that are new or have changed
+  const stylesToUpsert = draftStyles
+    .filter(draft => {
+      const pubHash = publishedHashById.get(draft.id);
+      return !pubHash || pubHash !== draft.content_hash;
+    })
+    .map(draft => ({
+      id: draft.id,
+      name: draft.name,
+      classes: draft.classes,
+      design: draft.design,
+      group: draft.group,
+      content_hash: draft.content_hash,
+      is_published: true,
+      updated_at: new Date().toISOString(),
+    }));
+
+  if (stylesToUpsert.length > 0) {
+    const { error: upsertError } = await client
+      .from('layer_styles')
+      .upsert(stylesToUpsert, {
+        onConflict: 'id,is_published',
+      });
+
+    if (upsertError) {
+      throw new Error(`Failed to publish layer styles: ${upsertError.message}`);
+    }
+  }
+
+  return {
+    count: stylesToUpsert.length,
+    changedStyleIds: stylesToUpsert.map(s => s.id),
+  };
 }
 
 /**
@@ -337,11 +362,12 @@ export async function getUnpublishedLayerStyles(): Promise<LayerStyle[]> {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  // Get all draft layer styles
+  // Get all draft layer styles (exclude soft-deleted)
   const { data: draftStyles, error } = await client
     .from('layer_styles')
     .select('*')
     .eq('is_published', false)
+    .is('deleted_at', null)
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -595,13 +621,28 @@ export async function softDeleteStyle(id: string): Promise<LayerStyleSoftDeleteR
   // Find all affected entities
   const affectedEntities = await findEntitiesUsingLayerStyle(id);
 
-  // Detach style from all affected page_layers
+  // Detach style from all affected page_layers and recompute hashes
+  const { generatePageLayersHash } = await import('@/lib/hash-utils');
+
   for (const entity of affectedEntities) {
     if (entity.type === 'page') {
+      const { data: existing } = await client
+        .from('page_layers')
+        .select('generated_css')
+        .eq('id', entity.id)
+        .eq('is_published', false)
+        .single();
+
+      const contentHash = generatePageLayersHash({
+        layers: entity.newLayers,
+        generated_css: existing?.generated_css || null,
+      });
+
       const { error: updateError } = await client
         .from('page_layers')
         .update({
           layers: entity.newLayers,
+          content_hash: contentHash,
           updated_at: new Date().toISOString(),
         })
         .eq('id', entity.id);

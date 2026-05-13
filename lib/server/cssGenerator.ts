@@ -5,6 +5,9 @@
  * Used by the /ycode/api/css/generate endpoint so that MCP-created
  * layers (or any API-driven changes) get their CSS generated without
  * needing the browser editor open.
+ *
+ * Also provides per-page CSS generation for targeted cache invalidation:
+ * each page stores its own generated_css so design changes are page-scoped.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -12,9 +15,10 @@ import { join, dirname } from 'node:path';
 import { compile } from 'tailwindcss';
 import type { Layer, Component } from '@/types';
 import { DEFAULT_TEXT_STYLES } from '@/lib/text-format-utils';
-import { getAllDraftLayers } from '@/lib/repositories/pageLayersRepository';
+import { getAllDraftLayers, getDraftLayers } from '@/lib/repositories/pageLayersRepository';
 import { getAllComponents } from '@/lib/repositories/componentRepository';
 import { setSetting } from '@/lib/repositories/settingsRepository';
+import { getSupabaseAdmin } from '@/lib/supabase-server';
 
 /**
  * Extract all Tailwind classes from a layer tree.
@@ -133,4 +137,111 @@ export async function generateAndSaveDraftCSS(): Promise<string> {
   await setSetting('draft_css', css);
 
   return css;
+}
+
+/**
+ * Generate per-page CSS for a single page.
+ *
+ * Extracts classes from the page's draft layers and any components
+ * referenced by those layers, compiles via Tailwind, and stores the
+ * result in the page_layers.generated_css column. The content_hash
+ * is recalculated automatically since it includes generated_css.
+ */
+export async function generateCSSForPage(pageId: string): Promise<string | null> {
+  const pageLayers = await getDraftLayers(pageId);
+  if (!pageLayers?.layers) return null;
+
+  const components = await getAllComponents(false);
+
+  const layersForCss = collectLayersWithComponents(pageLayers.layers, components);
+  const classes = extractClassesFromLayers(layersForCss);
+  const css = await compileCss(Array.from(classes));
+
+  await updatePageGeneratedCss(pageId, pageLayers, css);
+
+  return css;
+}
+
+/**
+ * Generate per-page CSS for multiple pages in batch.
+ * Loads components once and shares them across all pages.
+ */
+export async function generateCSSForPages(pageIds: string[]): Promise<number> {
+  if (pageIds.length === 0) return 0;
+
+  const components = await getAllComponents(false);
+  let updated = 0;
+
+  for (const pageId of pageIds) {
+    const pageLayers = await getDraftLayers(pageId);
+    if (!pageLayers?.layers) continue;
+
+    const layersForCss = collectLayersWithComponents(pageLayers.layers, components);
+    const classes = extractClassesFromLayers(layersForCss);
+    const css = await compileCss(Array.from(classes));
+
+    await updatePageGeneratedCss(pageId, pageLayers, css);
+    updated++;
+  }
+
+  return updated;
+}
+
+/**
+ * Collect a page's layers plus the layers of any components it references.
+ * This ensures the per-page CSS includes all classes needed to render
+ * component instances on that page.
+ */
+function collectLayersWithComponents(pageLayers: Layer[], components: Component[]): Layer[] {
+  const result: Layer[] = [...pageLayers];
+  const componentMap = new Map(components.map(c => [c.id, c]));
+  const visitedComponentIds = new Set<string>();
+
+  function findComponentRefs(layers: Layer[]) {
+    for (const layer of layers) {
+      if (layer.componentId && !visitedComponentIds.has(layer.componentId)) {
+        visitedComponentIds.add(layer.componentId);
+        const component = componentMap.get(layer.componentId);
+        if (component?.layers) {
+          result.push(...component.layers);
+          findComponentRefs(component.layers);
+        }
+      }
+      if (layer.children) {
+        findComponentRefs(layer.children);
+      }
+    }
+  }
+
+  findComponentRefs(pageLayers);
+  return result;
+}
+
+/**
+ * Write generated_css to the draft page_layers row and recalculate its
+ * content_hash so that publish-time hash comparison reflects CSS changes.
+ */
+async function updatePageGeneratedCss(
+  pageId: string,
+  pageLayers: { id: string; layers: Layer[] },
+  css: string,
+): Promise<void> {
+  const { generatePageLayersHash } = await import('@/lib/hash-utils');
+  const client = await getSupabaseAdmin();
+  if (!client) return;
+
+  const contentHash = generatePageLayersHash({
+    layers: pageLayers.layers,
+    generated_css: css,
+  });
+
+  await client
+    .from('page_layers')
+    .update({
+      generated_css: css,
+      content_hash: contentHash,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', pageLayers.id)
+    .eq('is_published', false);
 }

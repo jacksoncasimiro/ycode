@@ -146,6 +146,9 @@ export default async function Home() {
   // Load all global settings early so error pages also get global custom code
   const globalSettings = await fetchCachedGlobalSettings();
 
+  // Per-page CSS with fallback to global published_css
+  const cssForPage = data.generatedCss || globalSettings.publishedCss || undefined;
+
   // Check password protection for homepage.
   // First evaluate without cookies() so non-protected pages can stay cacheable.
   const folders = await fetchCachedFoldersForAuth();
@@ -207,7 +210,7 @@ export default async function Home() {
       page={data.page}
       layers={data.pageLayers.layers || []}
       components={data.components}
-      generatedCss={globalSettings.publishedCss || undefined}
+      generatedCss={cssForPage}
       colorVariablesCss={globalSettings.colorVariablesCss || undefined}
       locale={data.locale}
       availableLocales={data.availableLocales}

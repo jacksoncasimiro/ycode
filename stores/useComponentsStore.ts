@@ -592,22 +592,36 @@ export const useComponentsStore = create<ComponentsStore>((set, get) => {
 
         // Regenerate CSS to include updated component classes.
         // Run this off the critical path so navigation/UI is not blocked.
-        // Only collect layers from pages that actually contain an instance
-        // of this component (plus the component's own layers).
         scheduleIdle(async () => {
           try {
-            const { generateAndSaveCSS } = await import('@/lib/client/cssGenerator');
             const { usePagesStore } = await import('./usePagesStore');
             const { containsComponent } = await import('@/lib/component-utils');
 
-            const allLayers: Layer[] = [...layersBeingSaved];
+            // Find pages that use this component and regenerate their per-page CSS
             const allDrafts = usePagesStore.getState().draftsByPageId;
+            const affectedPageIds: string[] = [];
+            Object.entries(allDrafts).forEach(([pid, pageDraft]) => {
+              if (pageDraft.layers && containsComponent(pageDraft.layers, componentId)) {
+                affectedPageIds.push(pid);
+              }
+            });
+
+            if (affectedPageIds.length > 0) {
+              fetch('/ycode/api/css/generate-pages', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pageIds: affectedPageIds }),
+              }).catch(() => {});
+            }
+
+            // Also regenerate global draft_css for builder preview
+            const { generateAndSaveCSS } = await import('@/lib/client/cssGenerator');
+            const allLayers: Layer[] = [...layersBeingSaved];
             Object.values(allDrafts).forEach((pageDraft) => {
               if (pageDraft.layers && containsComponent(pageDraft.layers, componentId)) {
                 allLayers.push(...pageDraft.layers);
               }
             });
-
             await generateAndSaveCSS(allLayers);
           } catch (cssError) {
             console.error('Failed to generate CSS after component save:', cssError);

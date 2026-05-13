@@ -95,6 +95,8 @@ export interface PageData {
   locale?: Locale | null; // Current locale (if detected from URL)
   availableLocales?: Locale[]; // All active locales for locale switcher
   translations?: Record<string, Translation>; // Translations for locale-aware URL generation
+  /** Per-page CSS generated from this page's layers + resolved components. */
+  generatedCss?: string | null;
 }
 
 /**
@@ -109,6 +111,7 @@ export function slimPageData(data: PageData): PageData {
     ...data,
     pageLayers: { layers: data.pageLayers.layers || [] } as PageLayers,
     components: data.components.map(({ layers, ...rest }) => ({ ...rest, layers: [] }) as Component),
+    generatedCss: data.generatedCss,
   };
 }
 
@@ -637,6 +640,7 @@ async function fetchPageByPathInternal(
               locale: detectedLocale,
               availableLocales: availableLocales as Locale[] || [],
               translations,
+              generatedCss: pageLayers?.generated_css || null,
             };
           }
         }
@@ -701,6 +705,7 @@ async function fetchPageByPathInternal(
       locale: detectedLocale,
       availableLocales: availableLocales as Locale[] || [],
       translations,
+      generatedCss: pageLayers?.generated_css || null,
     };
   } catch (error) {
     console.error('Failed to fetch page:', error);
@@ -827,7 +832,7 @@ export const fetchHomepage = cache(async function fetchHomepage(
   preloadedComponents?: Component[],
   tenantId?: string,
   translations?: Record<string, Translation>
-): Promise<Pick<PageData, 'page' | 'pageLayers' | 'components' | 'locale' | 'availableLocales' | 'translations'> | null> {
+): Promise<Pick<PageData, 'page' | 'pageLayers' | 'components' | 'locale' | 'availableLocales' | 'translations' | 'generatedCss'> | null> {
   try {
     const supabase = await getSupabaseAdmin(tenantId);
 
@@ -888,10 +893,11 @@ export const fetchHomepage = cache(async function fetchHomepage(
         ...pageLayers,
         layers: resolvedLayers,
       },
-      components, // Layers are pre-resolved; components passed for rich-text embedded rendering
+      components,
       locale: null,
       availableLocales: availableLocales as Locale[] || [],
       translations: translations || {},
+      generatedCss: pageLayers?.generated_css || null,
     };
   } catch (error) {
     return null;

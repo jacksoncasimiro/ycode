@@ -6,6 +6,7 @@
  */
 
 import { getSupabaseAdmin } from '@/lib/supabase-server';
+import { generateContentHash } from '@/lib/hash-utils';
 import type { ColorVariable } from '@/types';
 
 export interface CreateColorVariableData {
@@ -199,4 +200,17 @@ export async function reorderColorVariables(
   if (error) {
     throw new Error(`Failed to reorder color variables: ${error.message}`);
   }
+}
+
+/**
+ * Compute a deterministic hash of all color variables.
+ * Used to detect changes between publishes — color variables have no
+ * draft/published model so we compare the current state against a
+ * stored snapshot hash.
+ */
+export async function getColorVariablesHash(): Promise<string> {
+  const variables = await getAllColorVariables();
+  return generateContentHash(
+    variables.map(v => ({ id: v.id, name: v.name, value: v.value, sort_order: v.sort_order }))
+  );
 }

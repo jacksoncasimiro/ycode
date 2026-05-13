@@ -1059,10 +1059,28 @@ export async function getUnpublishedPages(): Promise<Page[]> {
 }
 
 /**
+ * Get IDs of soft-deleted draft pages (pending hard-delete on next publish).
+ * Used to resolve their routes before deletion so caches can be invalidated.
+ */
+export async function getSoftDeletedPageIds(): Promise<string[]> {
+  const client = await getSupabaseAdmin();
+  if (!client) return [];
+
+  const { data } = await client
+    .from('pages')
+    .select('id')
+    .eq('is_published', false)
+    .not('deleted_at', 'is', null);
+
+  return (data || []).map(p => p.id);
+}
+
+/**
  * Hard-delete soft-deleted draft pages and their published counterparts.
  * Page layers are cleaned up automatically via CASCADE.
+ * Returns deleted page IDs so their cached routes can be invalidated.
  */
-export async function hardDeleteSoftDeletedPages(): Promise<{ count: number }> {
+export async function hardDeleteSoftDeletedPages(): Promise<{ count: number; deletedPageIds: string[] }> {
   const client = await getSupabaseAdmin();
 
   if (!client) {
@@ -1080,7 +1098,7 @@ export async function hardDeleteSoftDeletedPages(): Promise<{ count: number }> {
   }
 
   if (!deletedDrafts || deletedDrafts.length === 0) {
-    return { count: 0 };
+    return { count: 0, deletedPageIds: [] };
   }
 
   const ids = deletedDrafts.map(p => p.id);
@@ -1108,5 +1126,5 @@ export async function hardDeleteSoftDeletedPages(): Promise<{ count: number }> {
     throw new Error(`Failed to delete draft pages: ${draftError.message}`);
   }
 
-  return { count: deletedDrafts.length };
+  return { count: deletedDrafts.length, deletedPageIds: ids };
 }

@@ -23,8 +23,14 @@ function replacePasswordPlaceholder(connectionUrl: string, password: string): st
  */
 function tryExtractProjectId(connectionUrl: string): string | null {
   // Pooler format: postgresql://postgres.abc123:...
-  const match = connectionUrl.match(/\/\/postgres\.([a-z0-9]+):/);
-  return match ? match[1] : null;
+  const poolerMatch = connectionUrl.match(/\/\/postgres\.([a-z0-9]+):/);
+  if (poolerMatch) return poolerMatch[1];
+
+  // Direct format: postgresql://postgres:...@db.abc123.supabase.co:...
+  const directMatch = connectionUrl.match(/@db\.([a-z0-9]+)\.supabase\.co[:/]/);
+  if (directMatch) return directMatch[1];
+
+  return null;
 }
 
 /**

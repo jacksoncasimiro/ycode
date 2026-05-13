@@ -511,11 +511,18 @@ export const usePagesStore = create<PagesStore>((set, get) => ({
           // The new state will trigger another auto-save which will record its own version
         }
 
-        // After successfully saving the draft, generate and save CSS from ALL pages
+        // After successfully saving the draft, generate per-page CSS server-side
+        // and also regenerate the global draft_css for builder preview
         try {
-          const { generateAndSaveCSS } = await import('@/lib/client/cssGenerator');
+          // Per-page CSS: generate server-side for just this page (background, non-blocking)
+          fetch('/ycode/api/css/generate-pages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pageIds: [pageId] }),
+          }).catch(() => {});
 
-          // Collect layers from ALL pages for comprehensive CSS generation
+          // Global draft_css: still needed for builder preview
+          const { generateAndSaveCSS } = await import('@/lib/client/cssGenerator');
           const allLayers: Layer[] = [];
           const allDrafts = get().draftsByPageId;
           Object.values(allDrafts).forEach((pageDraft) => {
@@ -523,11 +530,9 @@ export const usePagesStore = create<PagesStore>((set, get) => ({
               allLayers.push(...pageDraft.layers);
             }
           });
-
           await generateAndSaveCSS(allLayers);
         } catch (cssError) {
           console.error('Failed to generate CSS after save:', cssError);
-          // Don't fail the save operation if CSS generation fails
         }
       }
     } catch (error) {
