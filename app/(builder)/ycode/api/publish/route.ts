@@ -605,7 +605,11 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      console.log(`[Cache] directly changed pages: ${publishedPageIds.length}, indirectly affected: ${indirectlyAffectedPageIds.length}, globalChanged: ${globalChanged}${globalChangedReason ? ` (${globalChangedReason})` : ''}`);
+      // publishedPageIds can contain the same page twice (once from the
+      // initial publishPages step, once from the CSS catch-up republish).
+      // Log the unique count so the number isn't misleading.
+      const uniqueDirectChangedCount = new Set(publishedPageIds).size;
+      console.log(`[Cache] directly changed pages: ${uniqueDirectChangedCount}, indirectly affected: ${indirectlyAffectedPageIds.length}, globalChanged: ${globalChanged}${globalChangedReason ? ` (${globalChangedReason})` : ''}`);
 
       const invalidationResult = await selectiveInvalidation(
         publishedPageIds,

@@ -791,14 +791,22 @@ export async function syncLayerStyleChangesToDrafts(
   const now = new Date().toISOString();
 
   for (const record of pageLayersRecords || []) {
-    let layers = (record.layers as Layer[]) || [];
+    // Skip rows without an actual layer tree — they can't reference any
+    // style anyway, and hashing a missing `layers` field with our default
+    // `[]` would diverge from whatever the original save path stored.
+    if (!Array.isArray(record.layers)) continue;
+
+    let layers = record.layers as Layer[];
     for (const style of styles) {
       layers = updateLayersWithStyle(layers, style.id, style.classes, style.design);
     }
 
+    // Match the canonical save formula exactly: empty-string generated_css
+    // must coalesce to null, otherwise the recomputed hash will drift from
+    // the stored one on every publish.
     const newHash = generatePageLayersHash({
       layers,
-      generated_css: record.generated_css ?? null,
+      generated_css: record.generated_css || null,
     });
 
     if (newHash !== record.content_hash) {
@@ -820,7 +828,11 @@ export async function syncLayerStyleChangesToDrafts(
   const affectedComponentIds: string[] = [];
 
   for (const record of componentRecords || []) {
-    let layers = (record.layers as Layer[]) || [];
+    // Same guard as page_layers above: components with no layer tree have
+    // nothing to sync, and forcing `[]` would diverge from the stored hash.
+    if (!Array.isArray(record.layers)) continue;
+
+    let layers = record.layers as Layer[];
     for (const style of styles) {
       layers = updateLayersWithStyle(layers, style.id, style.classes, style.design);
     }
