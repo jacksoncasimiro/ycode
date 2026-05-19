@@ -32,18 +32,25 @@ export interface EditComponentOptions {
    * Defaults to the first child layer of the component.
    */
   initialSelectionLayerId?: string;
+  /**
+   * Variant to open. When entering from an instance configured for a
+   * specific variant, pass its `componentVariantId` here so the editor
+   * opens the correct variant instead of defaulting to the first.
+   */
+  variantId?: string | null;
 }
 
 export function useEditComponent(): (componentId: string, options?: EditComponentOptions) => Promise<void> {
   const { openComponent } = useEditorActions();
 
   return useCallback(async (componentId: string, options: EditComponentOptions = {}) => {
-    const { returnToLayerId, initialSelectionLayerId } = options;
+    const { returnToLayerId, initialSelectionLayerId, variantId: requestedVariantId } = options;
 
     const { loadComponentDraft, getComponentById } = useComponentsStore.getState();
     const {
       currentPageId,
       editingComponentId,
+      editingComponentVariantId,
       setSelectedLayerId,
       setEditingComponentVariantId,
       pushComponentNavigation,
@@ -53,13 +60,15 @@ export function useEditComponent(): (componentId: string, options?: EditComponen
     const component = getComponentById(componentId);
     if (!component) return;
 
-    // Default to the first variant when entering a component. The URL may
-    // override this via `?variant=…` (handled by the URL→state sync effect),
-    // but seeding here means the editor never starts with a `null` variant.
-    const defaultVariantId = component.variants && component.variants.length > 0
-      ? component.variants[0].id
+    // Use the requested variant (from instance) if it exists on the component,
+    // otherwise fall back to the first variant.
+    const validRequestedVariant = requestedVariantId
+      && component.variants?.some(v => v.id === requestedVariantId)
+      ? requestedVariantId
       : null;
-    setEditingComponentVariantId(defaultVariantId);
+    const targetVariantId = validRequestedVariant
+      ?? (component.variants && component.variants.length > 0 ? component.variants[0].id : null);
+    setEditingComponentVariantId(targetVariantId);
 
     setSelectedLayerId(null);
 
@@ -71,6 +80,7 @@ export function useEditComponent(): (componentId: string, options?: EditComponen
           id: editingComponentId,
           name: currentComponent.name,
           layerId: returnToLayerId ?? null,
+          variantId: editingComponentVariantId ?? null,
         });
       }
     } else if (currentPageId) {
@@ -86,18 +96,19 @@ export function useEditComponent(): (componentId: string, options?: EditComponen
     }
 
     await loadComponentDraft(componentId);
-    openComponent(componentId, currentPageId, undefined, returnToLayerId, defaultVariantId);
+    openComponent(componentId, currentPageId, undefined, returnToLayerId, targetVariantId);
 
-    // Select an initial layer inside the component if the user hasn't
-    // already selected something valid during the await.
-    if (component.layers && component.layers.length > 0) {
+    // Select an initial layer inside the target variant's tree.
+    const { getComponentDraftLayers } = useComponentsStore.getState();
+    const variantLayers = getComponentDraftLayers(componentId, targetVariantId);
+    if (variantLayers && variantLayers.length > 0) {
       const currentSelection = useEditorStore.getState().selectedLayerId;
-      const hasValidSelection = currentSelection && findLayerById(component.layers, currentSelection);
+      const hasValidSelection = currentSelection && findLayerById(variantLayers, currentSelection);
       if (!hasValidSelection) {
         const target = initialSelectionLayerId
-          && findLayerById(component.layers, initialSelectionLayerId)
+          && findLayerById(variantLayers, initialSelectionLayerId)
           ? initialSelectionLayerId
-          : component.layers[0].id;
+          : variantLayers[0].id;
         setSelectedLayerId(target);
       }
     }

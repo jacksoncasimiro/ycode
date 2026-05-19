@@ -462,17 +462,24 @@ function LayerContextMenuInner({
   const handleEditMasterComponent = async () => {
     if (!layer?.componentId) return;
 
-    const { setEditingComponentId, setSelectedLayerId, pushComponentNavigation, editingComponentId } = useEditorStore.getState();
-    const { loadComponentDraft, getComponentById } = useComponentsStore.getState();
+    const { setEditingComponentId, setSelectedLayerId, setEditingComponentVariantId, editingComponentVariantId, pushComponentNavigation, editingComponentId } = useEditorStore.getState();
+    const { loadComponentDraft, getComponentById, getComponentDraftLayers } = useComponentsStore.getState();
     const { pages } = usePagesStore.getState();
 
+    const component = getComponentById(layer.componentId);
+    if (!component) return;
+
+    // Resolve which variant to open — use the instance's configured variant
+    const requestedVariantId = layer.componentVariantId;
+    const targetVariantId = (requestedVariantId && component.variants?.some(v => v.id === requestedVariantId))
+      ? requestedVariantId
+      : (component.variants && component.variants.length > 0 ? component.variants[0].id : null);
+
     // Capture the current layer ID BEFORE clearing selection
-    // This is the layer we'll return to when exiting component edit mode
     const componentInstanceLayerId = layer.id;
 
     // Push current context to navigation stack before entering component edit mode
     if (editingComponentId) {
-      // We're currently editing a component, push it to stack
       const currentComponent = getComponentById(editingComponentId);
       if (currentComponent) {
         pushComponentNavigation({
@@ -480,10 +487,10 @@ function LayerContextMenuInner({
           id: editingComponentId,
           name: currentComponent.name,
           layerId: layer.id,
+          variantId: editingComponentVariantId ?? null,
         });
       }
     } else if (pageId) {
-      // We're on a page, push it to stack
       const currentPage = pages.find((p) => p.id === pageId);
       if (currentPage) {
         pushComponentNavigation({
@@ -496,23 +503,22 @@ function LayerContextMenuInner({
     }
 
     // Clear selection FIRST to release lock on current page's channel
-    // before switching to component's channel
     setSelectedLayerId(null);
 
-    // Enter edit mode (changes lock channel to component)
-    // Pass the component instance layer ID so we can restore it when exiting
+    // Enter edit mode and set the target variant
     setEditingComponentId(layer.componentId, pageId, componentInstanceLayerId);
+    setEditingComponentVariantId(targetVariantId);
 
     // Load component into draft (async to ensure proper cache sync)
     await loadComponentDraft(layer.componentId);
 
-    // Select root layer only if user hasn't already selected a valid component layer during the await
-    const component = getComponentById(layer.componentId);
-    if (component && component.layers && component.layers.length > 0) {
+    // Select root layer of the target variant's tree
+    const variantLayers = getComponentDraftLayers(layer.componentId, targetVariantId);
+    if (variantLayers && variantLayers.length > 0) {
       const currentSelection = useEditorStore.getState().selectedLayerId;
-      const hasValidSelection = currentSelection && findLayerById(component.layers, currentSelection);
+      const hasValidSelection = currentSelection && findLayerById(variantLayers, currentSelection);
       if (!hasValidSelection) {
-        setSelectedLayerId(component.layers[0].id);
+        setSelectedLayerId(variantLayers[0].id);
       }
     }
   };

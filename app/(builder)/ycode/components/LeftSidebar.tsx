@@ -382,14 +382,20 @@ const LeftSidebar = React.memo(function LeftSidebar({
                   }}
                   onReorderVariants={(orderedIds) => reorderVariants(editingComponentId, orderedIds)}
                   onDeleteVariant={async (variantId) => {
-                    // After deletion, snap selection to the first remaining variant
-                    // so the editor is never pointed at a missing variant id.
                     const wasActive = variantId === activeComponentVariantId;
                     await deleteVariant(editingComponentId, variantId);
-                    if (wasActive) {
-                      const updated = useComponentsStore.getState().getComponentById(editingComponentId);
+                    // Only switch if the variant was actually removed (API may fail silently)
+                    const updated = useComponentsStore.getState().getComponentById(editingComponentId);
+                    const stillExists = updated?.variants?.some(v => v.id === variantId);
+                    if (wasActive && !stillExists) {
                       const fallback = updated?.variants?.[0]?.id ?? null;
                       setEditingComponentVariantId(fallback);
+                      // Snap selection to first layer of the new active variant
+                      const drafts = useComponentsStore.getState().componentDrafts[editingComponentId];
+                      const fallbackLayers = fallback && drafts?.[fallback]
+                        ? drafts[fallback]
+                        : updated?.variants?.[0]?.layers ?? [];
+                      onLayerSelect(fallbackLayers[0]?.id ?? null);
                     }
                   }}
                 />

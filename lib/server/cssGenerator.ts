@@ -210,9 +210,18 @@ function collectLayersWithComponents(pageLayers: Layer[], components: Component[
       if (layer.componentId && !visitedComponentIds.has(layer.componentId)) {
         visitedComponentIds.add(layer.componentId);
         const component = componentMap.get(layer.componentId);
-        if (component?.layers) {
-          result.push(...component.layers);
-          findComponentRefs(component.layers);
+        if (component) {
+          if (component.variants && component.variants.length > 0) {
+            for (const variant of component.variants) {
+              result.push(...(variant.layers ?? []));
+            }
+            for (const variant of component.variants) {
+              findComponentRefs(variant.layers ?? []);
+            }
+          } else if (component.layers) {
+            result.push(...component.layers);
+            findComponentRefs(component.layers);
+          }
         }
       }
       if (layer.children) {

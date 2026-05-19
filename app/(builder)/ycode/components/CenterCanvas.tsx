@@ -1723,8 +1723,12 @@ const CenterCanvas = React.memo(function CenterCanvas({
   // Mirrors the "Edit component" sidebar button.
   const editComponent = useEditComponent();
   const handleCanvasComponentEdit = useCallback((componentId: string, instanceLayerId: string) => {
-    editComponent(componentId, { returnToLayerId: instanceLayerId });
-  }, [editComponent]);
+    const instanceLayer = findLayerById(layers, instanceLayerId);
+    editComponent(componentId, {
+      returnToLayerId: instanceLayerId,
+      variantId: instanceLayer?.componentVariantId,
+    });
+  }, [editComponent, layers]);
 
   // Undo/Redo handlers
   // Note: We don't auto-save after undo/redo to preserve the redo stack

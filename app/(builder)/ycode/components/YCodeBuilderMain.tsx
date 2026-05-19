@@ -1119,9 +1119,16 @@ export default function YCodeBuilder({ children }: YCodeBuilderProps = {} as YCo
           await loadComponentDraft(returnDestination.id);
 
           // Pop the current component from the stack before transitioning
-          const { componentNavigationStack } = useEditorStore.getState();
+          const { componentNavigationStack, setEditingComponentVariantId: setVariant } = useEditorStore.getState();
           const newStack = [...componentNavigationStack];
           newStack.pop(); // Remove child component entry
+
+          // Restore the parent's variant from the navigation entry
+          const parentVariantId = returnDestination.variantId
+            ?? (parentComponent.variants && parentComponent.variants.length > 0
+              ? parentComponent.variants[0].id
+              : null);
+          setVariant(parentVariantId);
 
           // Transition directly to parent component (avoids showing page)
           // Manually update the stack to reflect the pop
@@ -1136,7 +1143,8 @@ export default function YCodeBuilder({ children }: YCodeBuilderProps = {} as YCo
           navigateToComponent(
             returnDestination.id,
             undefined, // rightTab - use current
-            returnDestination.layerId || undefined // layerId - restore the layer
+            returnDestination.layerId || undefined, // layerId - restore the layer
+            parentVariantId // variant - restore the active variant
           );
 
           // Restore layer selection if specified

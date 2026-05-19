@@ -36,6 +36,7 @@ export interface ComponentNavigationEntry {
   id: string; // pageId or componentId
   name: string; // Display name for breadcrumb
   layerId?: string | null; // Layer to restore when returning
+  variantId?: string | null; // Variant to restore when returning to a component
 }
 
 export type EditorSidebarTab = 'layers' | 'pages' | 'cms';

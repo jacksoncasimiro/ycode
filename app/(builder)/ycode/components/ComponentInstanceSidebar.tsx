@@ -97,8 +97,11 @@ export default function ComponentInstanceSidebar({
     .some(cat => Object.keys(overrides?.[cat as keyof typeof overrides] || {}).length > 0);
 
   const handleEditMasterComponent = useCallback(async () => {
-    await editComponent(component.id, { returnToLayerId: selectedLayerId });
-  }, [editComponent, component.id, selectedLayerId]);
+    await editComponent(component.id, {
+      returnToLayerId: selectedLayerId,
+      variantId: selectedLayer.componentVariantId,
+    });
+  }, [editComponent, component.id, selectedLayerId, selectedLayer.componentVariantId]);
 
   const handleOverridesChange = useCallback((newOverrides: Layer['componentOverrides']) => {
     onLayerUpdate(selectedLayerId, { componentOverrides: newOverrides });
@@ -325,7 +328,11 @@ export default function ComponentInstanceSidebar({
                       </Button>
                     ) : (
                       <Select
-                        value={selectedLayer.componentVariantId ?? component.variants[0].id}
+                        value={
+                          component.variants.some(v => v.id === selectedLayer.componentVariantId)
+                            ? selectedLayer.componentVariantId!
+                            : component.variants[0].id
+                        }
                         onValueChange={(value) => {
                           onLayerUpdate(selectedLayerId, { componentVariantId: value });
                         }}
