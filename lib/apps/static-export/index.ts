@@ -959,8 +959,17 @@ function buildTranslationsMap(translations: Translation[]): Record<string, Trans
 // Supabase asset bundler
 // ---------------------------------------------------------------------------
 
-/** SEO-proxy URL pattern Ycode emits for asset variables: `/a/<22-char hash>/<filename>` */
-const ASSET_PROXY_URL_RE = /\/a\/([A-Za-z0-9]{22})\/[^"'\s)<>]+/g
+/**
+ * SEO-proxy URL pattern Ycode emits for asset variables: `/a/<22-char hash>/<filename>`.
+ *
+ * Stops at `?` and `&` so query-string variants of the same asset (e.g.
+ * `?width=320`, `?width=1920`) collapse to a single bundled file. Without
+ * this, separate files were saved with `?width=…` literally in the name —
+ * Amplify (and any static host) ignores query params on path lookup, so
+ * those files were never served and every <img> fell through to the SPA
+ * fallback (the homepage).
+ */
+const ASSET_PROXY_URL_RE = /\/a\/([A-Za-z0-9]{22})\/[^"'\s)<>?&]+/g
 const PROXY_FETCH_CONCURRENCY = 8
 
 interface SupabaseAssetClient {
