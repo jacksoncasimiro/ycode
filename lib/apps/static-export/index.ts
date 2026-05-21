@@ -251,13 +251,18 @@ interface BuildHtmlInput {
   includeSwiper: boolean
 }
 
-// Swiper bundle URLs (pinned). Loaded only on pages that actually contain
-// a slider so the rest of the site stays JS-free.
+// Swiper assets. We bundle Ycode's `public/swiper-minimal.css` rather than
+// loading the full `swiper-bundle.min.css` from a CDN because the bundle
+// sets `.swiper { display: block }` and `.swiper-slide { display: block }`
+// which override the user's Tailwind `flex` utility at equal specificity
+// (Swiper CSS loads after `published_css`). The editor sidesteps this by
+// loading the same minimal CSS — we do the same in the export so layouts
+// match. JS still comes from the CDN: only the CSS conflicts.
 // Major version is kept in sync with the `swiper` dependency in package.json
 // so the export and the live builder render identically.
 const SWIPER_VERSION = '12'
-const SWIPER_CSS_CDN = `https://cdn.jsdelivr.net/npm/swiper@${SWIPER_VERSION}/swiper-bundle.min.css`
 const SWIPER_JS_CDN = `https://cdn.jsdelivr.net/npm/swiper@${SWIPER_VERSION}/swiper-bundle.min.js`
+const SWIPER_CSS_PATH = '/swiper-minimal.css'
 
 /**
  * Slider boot script — pure DOM port of components/SliderInitializer.tsx
@@ -422,10 +427,12 @@ function buildDocument({
   const css = [colorVariablesCss, publishedCss].filter(Boolean).join('\n')
   if (css) head.push(`<style>${css}</style>`)
 
-  // Swiper CSS goes in <head> so the slider doesn't flash unstyled before
-  // the bundle on jsDelivr arrives.
+  // Bundled Swiper CSS goes in <head>. We ship `public/swiper-minimal.css`
+  // alongside the export (see the asset-bundle step) rather than the full
+  // CDN bundle so layout-related rules don't override the user's Tailwind
+  // utilities — same approach the editor uses.
   if (includeSwiper) {
-    head.push(`<link rel="stylesheet" href="${SWIPER_CSS_CDN}" />`)
+    head.push(`<link rel="stylesheet" href="${SWIPER_CSS_PATH}" />`)
   }
 
   const indent = '  '
@@ -1211,6 +1218,12 @@ export async function exportSite(): Promise<ExportJob> {
           // self-contained hosting.
           for (const match of html.matchAll(/\/ycode\/layouts\/assets\/[^"'\s)]+/g)) {
             referencedAssetPaths.add(match[0])
+          }
+
+          // When a page contains a slider, bundle Ycode's minimal Swiper CSS
+          // from /public — the export's <link> in <head> points at this path.
+          if (resolved.hasSlider) {
+            referencedAssetPaths.add(SWIPER_CSS_PATH)
           }
 
           outputs.push({
