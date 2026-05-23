@@ -13,15 +13,10 @@ import {
   getTiptapTextContent,
   buildTiptapDoc,
   applyDesignToLayer,
-  ELEMENT_TEMPLATES,
 } from '@/lib/mcp/utils';
 import type { RichTextBlock } from '@/lib/mcp/utils';
 import { broadcastLayersChanged } from '@/lib/mcp/broadcast';
-import { designSchema } from './shared-schemas';
-
-const templateEnum = z.enum(
-  Object.keys(ELEMENT_TEMPLATES) as [string, ...string[]],
-);
+import { designSchema, richTextBlockSchema, templateEnum } from './shared-schemas';
 
 async function getPageLayers(pageId: string): Promise<Layer[]> {
   const pageLayers = await getDraftLayers(pageId);
@@ -67,12 +62,8 @@ NESTING RULES:
       position: z.number().optional().describe('Index within parent children. Omit to append at end.'),
       template: templateEnum.describe('Element template to create'),
       text_content: z.string().optional().describe('For text/heading/button/richText: plain display text'),
-      rich_content: z.array(z.object({
-        type: z.enum(['paragraph', 'heading', 'blockquote', 'bulletList', 'orderedList', 'codeBlock', 'horizontalRule']),
-        text: z.string().optional().describe('Text content. Supports **bold**, *italic*, [link](url).'),
-        level: z.number().optional().describe('Heading level 1-6 (for heading type)'),
-        items: z.array(z.string()).optional().describe('List items (for bulletList/orderedList)'),
-      })).optional().describe('For richText: structured content blocks. Overrides text_content.'),
+      rich_content: z.array(richTextBlockSchema).optional()
+        .describe('For richText: structured content blocks. Overrides text_content.'),
       custom_name: z.string().optional().describe('Custom display name for the layer'),
     },
     async ({ page_id, parent_layer_id, position, template, text_content, rich_content, custom_name }) => {

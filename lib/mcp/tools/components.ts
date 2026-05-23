@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { Layer } from '@/types';
+import type { Breakpoint, Layer, UIState } from '@/types';
 import {
   getAllComponents,
   getComponentById,
@@ -17,21 +17,18 @@ import {
   canHaveChildren,
   createLayerFromTemplate,
   getTiptapTextContent,
+  buildTiptapDoc,
   applyDesignToLayer,
   generateId,
-  ELEMENT_TEMPLATES,
 } from '@/lib/mcp/utils';
+import type { RichTextBlock } from '@/lib/mcp/utils';
 import {
   broadcastComponentCreated,
   broadcastComponentUpdated,
   broadcastComponentDeleted,
   broadcastComponentLayersUpdated,
 } from '@/lib/mcp/broadcast';
-import { designSchema } from './shared-schemas';
-
-const templateEnum = z.enum(
-  Object.keys(ELEMENT_TEMPLATES) as [string, ...string[]],
-);
+import { designSchema, richTextBlockSchema, templateEnum } from './shared-schemas';
 
 const variableSchema = z.object({
   name: z.string().describe('Display name (e.g. "Button label", "Hero image")'),
@@ -173,7 +170,11 @@ EXAMPLE: A "Card" component with a title variable:
   server.tool(
     'update_component_layers',
     `Modify a component's layer tree. Works like batch_operations but for component layers.
-Use ref_id in add_layer to name layers, then reference them in later operations.`,
+Use ref_id in add_layer to name layers, then reference them in later operations.
+
+Supports the same ops as batch_operations (add_layer, update_design, update_text,
+update_image, set_rich_text, apply_style, delete_layer, move_layer) plus
+link_variable for wiring component variables to layers.`,
     {
       component_id: z.string().describe('The component ID'),
       operations: z.array(z.discriminatedUnion('type', [
@@ -183,9 +184,12 @@ Use ref_id in add_layer to name layers, then reference them in later operations.
           position: z.number().optional(),
           template: templateEnum,
           text_content: z.string().optional(),
+          rich_content: z.array(richTextBlockSchema).optional()
+            .describe('For richText: structured content blocks. Overrides text_content.'),
           custom_name: z.string().optional(),
           ref_id: z.string().optional().describe('Reference ID for later operations'),
           design: designSchema.optional(),
+          image_asset_id: z.string().optional().describe('For image layers: asset ID to display'),
           variable_id: z.string().optional()
             .describe('Component variable ID to link to this layer\'s primary content (text/image/link)'),
         }),
@@ -193,11 +197,30 @@ Use ref_id in add_layer to name layers, then reference them in later operations.
           type: z.literal('update_design'),
           layer_id: z.string().describe('Layer ID or ref_id'),
           design: designSchema,
+          breakpoint: z.enum(['desktop', 'tablet', 'mobile']).default('desktop').optional(),
+          ui_state: z.enum(['neutral', 'hover', 'focus', 'active', 'disabled']).default('neutral').optional()
+            .describe('UI state: "hover" for hover styles, "focus" for focus, etc.'),
         }),
         z.object({
           type: z.literal('update_text'),
           layer_id: z.string().describe('Layer ID or ref_id'),
           text: z.string(),
+        }),
+        z.object({
+          type: z.literal('update_image'),
+          layer_id: z.string().describe('Layer ID or ref_id'),
+          asset_id: z.string().describe('Asset ID from upload_asset'),
+        }),
+        z.object({
+          type: z.literal('set_rich_text'),
+          layer_id: z.string().describe('RichText layer ID or ref_id'),
+          blocks: z.array(richTextBlockSchema).min(1)
+            .describe('Content blocks (paragraph, heading, list, etc.)'),
+        }),
+        z.object({
+          type: z.literal('apply_style'),
+          layer_id: z.string(),
+          style_id: z.string().describe('Layer style ID to apply'),
         }),
         z.object({
           type: z.literal('delete_layer'),
@@ -243,11 +266,19 @@ Use ref_id in add_layer to name layers, then reference them in later operations.
               let newLayer = createLayerFromTemplate(op.template, {
                 customName: op.custom_name,
                 textContent: op.text_content,
+                richContent: op.rich_content as RichTextBlock[] | undefined,
               });
               if (!newLayer) { results.push({ op: i, status: 'error', detail: `Unknown template "${op.template}"` }); continue; }
 
               if (op.design) {
                 newLayer = applyDesignToLayer(newLayer, op.design as Record<string, Record<string, unknown>>);
+              }
+
+              if (op.image_asset_id && newLayer.variables?.image) {
+                newLayer.variables = {
+                  ...newLayer.variables,
+                  image: { ...newLayer.variables.image, src: { type: 'asset', data: { asset_id: op.image_asset_id } } },
+                };
               }
 
               if (op.variable_id) {
@@ -264,8 +295,10 @@ Use ref_id in add_layer to name layers, then reference them in later operations.
               const layerId = refMap.get(op.layer_id) || op.layer_id;
               const layer = findLayerById(layers, layerId);
               if (!layer) { results.push({ op: i, status: 'error', detail: `Layer "${op.layer_id}" not found` }); continue; }
+              const bp = (op.breakpoint ?? 'desktop') as Breakpoint;
+              const state = (op.ui_state ?? 'neutral') as UIState;
               layers = updateLayerById(layers, layerId, (l) =>
-                applyDesignToLayer(l, op.design as Record<string, Record<string, unknown>>),
+                applyDesignToLayer(l, op.design as Record<string, Record<string, unknown>>, bp, state),
               );
               results.push({ op: i, status: 'ok', detail: `Styled "${layer.customName || layer.name}"` });
               break;
@@ -283,6 +316,50 @@ Use ref_id in add_layer to name layers, then reference them in later operations.
                 },
               }));
               results.push({ op: i, status: 'ok', detail: `Set text on "${layer.customName || layer.name}"` });
+              break;
+            }
+
+            case 'update_image': {
+              const layerId = refMap.get(op.layer_id) || op.layer_id;
+              const layer = findLayerById(layers, layerId);
+              if (!layer) { results.push({ op: i, status: 'error', detail: `Layer "${op.layer_id}" not found` }); continue; }
+              layers = updateLayerById(layers, layerId, (l) => {
+                const existing = (l.variables?.image || {}) as Record<string, unknown>;
+                return {
+                  ...l,
+                  variables: {
+                    ...l.variables,
+                    image: {
+                      ...existing,
+                      src: { type: 'asset' as const, data: { asset_id: op.asset_id } },
+                      alt: (existing.alt || { type: 'dynamic_text' as const, data: { content: '' } }) as { type: 'dynamic_text'; data: { content: string } },
+                    },
+                  },
+                };
+              });
+              results.push({ op: i, status: 'ok', detail: `Set image on "${layer.customName || layer.name}"` });
+              break;
+            }
+
+            case 'set_rich_text': {
+              const layerId = refMap.get(op.layer_id) || op.layer_id;
+              const layer = findLayerById(layers, layerId);
+              if (!layer) { results.push({ op: i, status: 'error', detail: `Layer "${op.layer_id}" not found` }); continue; }
+              const tiptapDoc = buildTiptapDoc(op.blocks as RichTextBlock[]);
+              layers = updateLayerById(layers, layerId, (l) => ({
+                ...l,
+                variables: { ...l.variables, text: { type: 'dynamic_rich_text', data: { content: tiptapDoc } } },
+              }));
+              results.push({ op: i, status: 'ok', detail: `Set rich text on "${layer.customName || layer.name}" (${op.blocks.length} blocks)` });
+              break;
+            }
+
+            case 'apply_style': {
+              const layerId = refMap.get(op.layer_id) || op.layer_id;
+              const layer = findLayerById(layers, layerId);
+              if (!layer) { results.push({ op: i, status: 'error', detail: `Layer "${op.layer_id}" not found` }); continue; }
+              layers = updateLayerById(layers, layerId, (l) => ({ ...l, styleId: op.style_id }));
+              results.push({ op: i, status: 'ok', detail: `Applied style to "${layer.customName || layer.name}"` });
               break;
             }
 
