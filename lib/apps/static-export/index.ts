@@ -249,6 +249,7 @@ interface BuildHtmlInput {
   publishedCss: string | null
   colorVariablesCss: string | null
   includeSwiper: boolean
+  interactions: ExportedInteraction[]
 }
 
 // Swiper assets. We bundle Ycode's `public/swiper-minimal.css` rather than
@@ -392,12 +393,101 @@ const SLIDER_BOOT_SCRIPT = `
 })();
 `.trim()
 
+/**
+ * Minimal interactions runtime for the static export. Reads a JSON blob
+ * Ycode emits per-page and wires click→display toggles + breakpoint-aware
+ * on-load hiding. This is intentionally a tiny subset of what Ycode's React
+ * AnimationInitializer + GSAP do at runtime — covers the standard mobile
+ * hamburger pattern (which is what most Navigation templates need) without
+ * shipping the full GSAP bundle. Hover/scroll triggers and non-display
+ * tween properties fall through to no-op.
+ */
+const INTERACTIONS_BOOT_SCRIPT = `
+(function () {
+  var el = document.getElementById('ycode-interactions');
+  if (!el) return;
+  var interactions;
+  try { interactions = JSON.parse(el.textContent || '[]'); } catch (_) { return; }
+  if (!interactions || !interactions.length) return;
+
+  // Tailwind default breakpoints. Matches the names Ycode stores in
+  // interaction.timeline.breakpoints ('mobile' / 'tablet' / 'desktop').
+  function currentBreakpoint() {
+    var w = window.innerWidth;
+    if (w < 768) return 'mobile';
+    if (w < 1024) return 'tablet';
+    return 'desktop';
+  }
+
+  function matchesBreakpoint(bps) {
+    return !bps || !bps.length || bps.indexOf(currentBreakpoint()) >= 0;
+  }
+
+  function getEl(layerId) {
+    return document.querySelector('[data-layer-id="' + layerId + '"]');
+  }
+
+  function setDisplay(target, value) {
+    if (!target) return;
+    if (value === 'hidden') target.style.display = 'none';
+    else target.style.removeProperty('display'); // fall back to CSS default
+  }
+
+  // Re-applied on resize because some interactions are breakpoint-scoped
+  // (e.g. mobile-only hamburger menus). Without this, resizing from mobile
+  // to desktop would leave the menu stuck hidden via inline display:none.
+  function applyOnLoad() {
+    interactions.forEach(function (i) {
+      var inScope = matchesBreakpoint(i.breakpoints);
+      i.tweens.forEach(function (t) {
+        if (!t.applyDisplayOnLoad) return;
+        var target = getEl(t.targetLayerId);
+        if (!target) return;
+        if (inScope && t.fromDisplay) setDisplay(target, t.fromDisplay);
+        else target.style.removeProperty('display');
+      });
+    });
+  }
+
+  function boot() {
+    applyOnLoad();
+    window.addEventListener('resize', applyOnLoad);
+
+    interactions.forEach(function (i) {
+      if (i.trigger !== 'click') return; // hover/scroll/load not yet supported
+      var trigger = getEl(i.triggerLayerId);
+      if (!trigger) return;
+      trigger.addEventListener('click', function () {
+        if (!matchesBreakpoint(i.breakpoints)) return;
+        i.tweens.forEach(function (t) {
+          var target = getEl(t.targetLayerId);
+          if (!target) return;
+          // Toggle off whatever the current displayed state is — yoyo
+          // behaviour falls out for free since hidden becomes visible and
+          // visible becomes hidden on every click.
+          var isHidden = target.style.display === 'none'
+            || getComputedStyle(target).display === 'none';
+          setDisplay(target, isHidden ? 'visible' : 'hidden');
+        });
+      });
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
+`.trim()
+
 function buildDocument({
   page,
   bodyHtml,
   publishedCss,
   colorVariablesCss,
   includeSwiper,
+  interactions,
 }: BuildHtmlInput): string {
   const seo = extractSeo(page)
   const title = seo.title || page.name
@@ -445,6 +535,14 @@ function buildDocument({
     trailingScripts.push(`<script src="${SWIPER_JS_CDN}"></script>`)
     trailingScripts.push(`<script>${SLIDER_BOOT_SCRIPT}</script>`)
   }
+  if (interactions.length > 0) {
+    // Serialize the trimmed-interaction list as JSON. The runtime reads it
+    // out of this <script> tag by id. Escape the closing-tag sequence so
+    // user data can't break out of the script context.
+    const safe = JSON.stringify(interactions).replace(/<\/(script)/gi, '<\\/$1')
+    trailingScripts.push(`<script type="application/json" id="ycode-interactions">${safe}</script>`)
+    trailingScripts.push(`<script>${INTERACTIONS_BOOT_SCRIPT}</script>`)
+  }
 
   return [
     '<!DOCTYPE html>',
@@ -490,11 +588,31 @@ function computeOutputKey(page: Page, folders: PageFolder[]): string {
 // Data loading
 // ---------------------------------------------------------------------------
 
+/**
+ * Subset of LayerInteraction we serialize for the runtime. Keeps only the
+ * fields the export's tiny JS shim needs to wire click→display toggles —
+ * intentionally NOT a full GSAP port. Anything more elaborate (hover,
+ * scroll-into-view, while-scrolling, splitText) falls back to no-op for now.
+ */
+interface ExportedInteraction {
+  triggerLayerId: string
+  trigger: 'click' | 'hover' | 'load' | 'scroll-into-view' | 'while-scrolling'
+  breakpoints: string[] // ['mobile', 'tablet', 'desktop'] — empty = all
+  yoyo: boolean
+  tweens: Array<{
+    targetLayerId: string
+    fromDisplay?: 'hidden' | 'visible'
+    toDisplay?: 'hidden' | 'visible'
+    applyDisplayOnLoad: boolean
+  }>
+}
+
 interface ResolvedPage {
   page: Page
   bodyHtml: string
   outputKey: string
   hasSlider: boolean
+  interactions: ExportedInteraction[]
 }
 
 interface PageCmsSettings {
@@ -637,7 +755,59 @@ function renderResolved(
     bodyHtml,
     outputKey,
     hasSlider: layerTreeContains(layers, 'slider'),
+    interactions: collectInteractions(layers),
   }
+}
+
+/**
+ * Walk the resolved layer tree and pull out interactions in a shape the
+ * export's runtime can consume. We trim to the subset of LayerInteraction
+ * fields we actually act on (click→display toggles) — see the JSDoc on
+ * ExportedInteraction for what's intentionally NOT supported.
+ */
+function collectInteractions(layers: Layer[]): ExportedInteraction[] {
+  const collected: ExportedInteraction[] = []
+
+  const visit = (layer: Layer) => {
+    if (layer.interactions?.length) {
+      for (const interaction of layer.interactions) {
+        const tweens = (interaction.tweens ?? [])
+          .filter((t) => t.layer_id) // tweens without a target are no-ops
+          .map((t) => {
+            const fromDisplay = t.from?.display
+            const toDisplay = t.to?.display
+            return {
+              targetLayerId: t.layer_id,
+              fromDisplay:
+                fromDisplay === 'hidden' || fromDisplay === 'visible'
+                  ? (fromDisplay as 'hidden' | 'visible')
+                  : undefined,
+              toDisplay:
+                toDisplay === 'hidden' || toDisplay === 'visible'
+                  ? (toDisplay as 'hidden' | 'visible')
+                  : undefined,
+              applyDisplayOnLoad: t.apply_styles?.display === 'on-load',
+            }
+          })
+          // Skip tweens that don't touch display (the only property the
+          // minimal runtime knows how to animate).
+          .filter((t) => t.fromDisplay !== undefined || t.toDisplay !== undefined)
+
+        if (tweens.length === 0) continue
+
+        collected.push({
+          triggerLayerId: layer.id,
+          trigger: interaction.trigger,
+          breakpoints: interaction.timeline?.breakpoints ?? [],
+          yoyo: interaction.timeline?.yoyo ?? false,
+          tweens,
+        })
+      }
+    }
+    if (layer.children) for (const child of layer.children) visit(child)
+  }
+  for (const layer of layers) visit(layer)
+  return collected
 }
 
 function layerTreeContains(layers: Layer[], name: string): boolean {
@@ -1211,6 +1381,7 @@ export async function exportSite(): Promise<ExportJob> {
             publishedCss: publishedCss ?? null,
             colorVariablesCss: colorVariablesCss ?? null,
             includeSwiper: resolved.hasSlider,
+            interactions: resolved.interactions,
           })
 
           // Collect Ycode's built-in placeholder URLs referenced from this
