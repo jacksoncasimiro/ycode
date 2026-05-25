@@ -19,8 +19,6 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Spinner } from '@/components/ui/spinner'
-import { Switch } from '@/components/ui/switch'
-import { Label } from '@/components/ui/label'
 
 // =============================================================================
 // Types — mirrors lib/apps/static-export/types.ts ExportConfig
@@ -30,7 +28,6 @@ type OutputTarget = 'local' | 's3' | 'github'
 
 interface StaticExportConfig {
   outputTargets: OutputTarget[]
-  autoExportOnPublish: boolean
   localPath: string
   s3Bucket: string
   s3Region: string
@@ -45,7 +42,6 @@ interface StaticExportConfig {
 
 const DEFAULT_CONFIG: StaticExportConfig = {
   outputTargets: ['local'],
-  autoExportOnPublish: false,
   localPath: './out',
   s3Bucket: '',
   s3Region: 'us-east-1',
@@ -443,27 +439,6 @@ export default function StaticExportSettings() {
             </Field>
           </div>
         )}
-
-        {/* Auto-export Toggle */}
-        <div className="space-y-4 border-t pt-6">
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label className="text-xs font-medium">
-                Auto-export on publish
-              </Label>
-              <FieldDescription>
-                Automatically trigger an export every time you publish your site.
-              </FieldDescription>
-            </div>
-            <Switch
-              checked={config.autoExportOnPublish}
-              onCheckedChange={(checked) =>
-                updateConfig({ autoExportOnPublish: checked })
-              }
-              size="sm"
-            />
-          </div>
-        </div>
 
         {/* Actions */}
         <div className="flex gap-2 pt-2">

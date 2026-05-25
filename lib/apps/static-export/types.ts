@@ -15,8 +15,6 @@ export type OutputTarget = 'local' | 's3' | 'github'
 export interface ExportConfig {
   /** Active output destinations (multi-select). Empty array = no-op export. */
   outputTargets: OutputTarget[]
-  /** Automatically trigger an export when the site is published */
-  autoExportOnPublish: boolean
 
   // ---- Local target ----
   /** Local output directory (absolute or relative to process.cwd()) */

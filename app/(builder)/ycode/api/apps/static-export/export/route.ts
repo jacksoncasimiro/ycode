@@ -2,30 +2,24 @@ import { NextRequest } from 'next/server';
 import { exportSite } from '@/lib/apps/static-export';
 import { noCache } from '@/lib/api-response';
 
-import type { ExportJob } from '@/lib/apps/static-export/types';
-
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-
-/**
- * In-memory storage for the most recent export job.
- * Simple module-level variable — resets on server restart.
- */
-export let lastExportJob: ExportJob | null = null;
 
 /**
  * POST /ycode/api/apps/static-export/export
  * Trigger a static export of all published pages.
  *
- * Fire-and-forget: starts the export async and returns immediately
- * with the initial job status. Use /status to poll for completion.
+ * Fire-and-forget: starts the export async and returns immediately with the
+ * initial job status. The engine itself persists the final job to
+ * app_settings (key `last_export_job`); poll /status to read it back.
  */
 export async function POST(_request: NextRequest) {
   try {
-    // Start the export — fire it off without awaiting for the HTTP response
-    exportSite().then((job) => {
-      lastExportJob = job;
-    }).catch((err) => {
+    // Start the export — fire it off without awaiting for the HTTP response.
+    // The engine persists the terminal job to app_settings, so we don't
+    // need any module-scope state here (which would never survive across
+    // serverless isolates anyway).
+    exportSite().catch((err) => {
       console.error('[Static Export] Export job failed:', err);
     });
 

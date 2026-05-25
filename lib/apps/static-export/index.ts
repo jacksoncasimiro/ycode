@@ -50,7 +50,6 @@ export const APP_ID = 'static-export'
 
 const DEFAULT_CONFIG: ExportConfig = {
   outputTargets: ['local'],
-  autoExportOnPublish: false,
   localPath: './out',
   s3Bucket: '',
   s3Region: '',
@@ -87,7 +86,6 @@ function normalizeOutputTargets(value: unknown): OutputTarget[] {
 export async function getExportConfig(): Promise<ExportConfig> {
   const [
     outputTargetsRaw,
-    autoExportOnPublish,
     localPath,
     s3Bucket,
     s3Region,
@@ -101,7 +99,6 @@ export async function getExportConfig(): Promise<ExportConfig> {
     legacyTarget,
   ] = await Promise.all([
     getAppSettingValue<unknown>(APP_ID, 'output_targets'),
-    getAppSettingValue<boolean>(APP_ID, 'auto_export_on_publish'),
     getAppSettingValue<string>(APP_ID, 'local_path'),
     getAppSettingValue<string>(APP_ID, 's3_bucket'),
     getAppSettingValue<string>(APP_ID, 's3_region'),
@@ -120,7 +117,6 @@ export async function getExportConfig(): Promise<ExportConfig> {
 
   return {
     outputTargets: outputTargets.length > 0 ? outputTargets : DEFAULT_CONFIG.outputTargets,
-    autoExportOnPublish: autoExportOnPublish ?? DEFAULT_CONFIG.autoExportOnPublish,
     localPath: localPath ?? DEFAULT_CONFIG.localPath,
     s3Bucket: s3Bucket ?? DEFAULT_CONFIG.s3Bucket,
     s3Region: s3Region ?? DEFAULT_CONFIG.s3Region,
@@ -134,10 +130,25 @@ export async function getExportConfig(): Promise<ExportConfig> {
   }
 }
 
+/**
+ * Persisted last-job status — survives across serverless isolates and
+ * dev-server restarts. The module-level variable that used to back this
+ * never worked outside a single Node process.
+ */
+const LAST_JOB_KEY = 'last_export_job'
+
+export async function getLastExportJob(): Promise<ExportJob | null> {
+  const value = await getAppSettingValue<ExportJob>(APP_ID, LAST_JOB_KEY)
+  return value ?? null
+}
+
+async function saveLastExportJob(job: ExportJob): Promise<void> {
+  await setAppSetting(APP_ID, LAST_JOB_KEY, job)
+}
+
 export async function saveExportConfig(config: ExportConfig): Promise<void> {
   await Promise.all([
     setAppSetting(APP_ID, 'output_targets', normalizeOutputTargets(config.outputTargets)),
-    setAppSetting(APP_ID, 'auto_export_on_publish', config.autoExportOnPublish),
     setAppSetting(APP_ID, 'local_path', config.localPath),
     setAppSetting(APP_ID, 's3_bucket', config.s3Bucket),
     setAppSetting(APP_ID, 's3_region', config.s3Region),
@@ -1326,6 +1337,7 @@ export async function exportSite(): Promise<ExportJob> {
     if (pages.length === 0) {
       job.status = 'completed'
       job.completedAt = new Date().toISOString()
+      await saveLastExportJob(job).catch(() => { /* non-fatal */ })
       return job
     }
 
@@ -1481,6 +1493,7 @@ export async function exportSite(): Promise<ExportJob> {
 
     job.status = 'completed'
     job.completedAt = new Date().toISOString()
+    await saveLastExportJob(job).catch(() => { /* non-fatal */ })
     return job
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown export error'
@@ -1488,6 +1501,7 @@ export async function exportSite(): Promise<ExportJob> {
     job.status = 'failed'
     job.completedAt = new Date().toISOString()
     job.error = message
+    await saveLastExportJob(job).catch(() => { /* non-fatal */ })
     return job
   }
 }
