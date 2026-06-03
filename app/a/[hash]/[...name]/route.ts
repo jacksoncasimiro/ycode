@@ -79,13 +79,24 @@ export async function GET(
       .getPublicUrl(asset.storage_path);
 
     const url = new URL(request.url);
-    const response = await fetch(urlData.publicUrl);
-    if (!response.ok) {
+    const isImage = isAssetOfType(asset.mime_type, ASSET_CATEGORIES.IMAGES);
+
+    // Forward Range requests for media (video/audio). Safari refuses to play
+    // a video unless the server responds with 206 Partial Content, so we proxy
+    // the client's Range header to Supabase Storage (which supports ranges).
+    const rangeHeader = request.headers.get('range');
+    const upstreamHeaders: Record<string, string> = {};
+    if (rangeHeader && !isImage) {
+      upstreamHeaders.Range = rangeHeader;
+    }
+
+    const response = await fetch(urlData.publicUrl, { headers: upstreamHeaders });
+    if (!response.ok && response.status !== 206) {
       return new Response('Not found', { status: 404 });
     }
 
     const transform = parseTransformParams(url.searchParams);
-    const canResize = transform && isAssetOfType(asset.mime_type, ASSET_CATEGORIES.IMAGES);
+    const canResize = transform && isImage;
 
     if (canResize) {
       const buffer = Buffer.from(await response.arrayBuffer());
@@ -111,11 +122,23 @@ export async function GET(
       });
     }
 
+    // Mirror the upstream status (206 for partial content) and range headers so
+    // Safari can stream/seek the video. Advertise Accept-Ranges so clients know
+    // range requests are supported even on the initial full response.
+    const headers = new Headers({
+      'Content-Type': asset.mime_type || 'application/octet-stream',
+      'Accept-Ranges': 'bytes',
+    });
+
+    const contentRange = response.headers.get('content-range');
+    if (contentRange) headers.set('Content-Range', contentRange);
+
+    const contentLength = response.headers.get('content-length');
+    if (contentLength) headers.set('Content-Length', contentLength);
+
     return new Response(response.body, {
-      status: 200,
-      headers: {
-        'Content-Type': asset.mime_type || 'application/octet-stream',
-      },
+      status: response.status,
+      headers,
     });
   } catch {
     return new Response('Internal server error', { status: 500 });
